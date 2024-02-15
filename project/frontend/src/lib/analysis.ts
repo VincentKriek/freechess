@@ -44,6 +44,8 @@ async function parsePGN(pgn?: string): Promise<Position[]> {
     }
 }
 
+// #region evaluation
+
 async function evaluate() {
     // Remove report cards, display progress bar
     $("#report-cards").css("display", "none");
@@ -65,89 +67,80 @@ async function evaluate() {
     // Post PGN to server to have it parsed
     logAnalysisInfo("Parsing PGN...");
 
-    const positions: Position[] = await parsePGN(pgn);
-
-    // Update board player usernames
-    whitePlayer.username =
-        pgn.match(/(?:\[White ")(.+)(?="\])/)?.[1] ?? "White Player";
-    whitePlayer.rating = pgn.match(/(?:\[WhiteElo ")(.+)(?="\])/)?.[1] ?? "?";
-
-    blackPlayer.username =
-        pgn.match(/(?:\[Black ")(.+)(?="\])/)?.[1] ?? "Black Player";
-    blackPlayer.rating = pgn.match(/(?:\[BlackElo ")(.+)(?="\])/)?.[1] ?? "?";
-
-    updateBoardPlayers();
+    let positions: Position[] = await parsePGN(pgn);
 
     $("#secondary-message").html(
         "It can take around a minute to process a full game."
     );
 
     // Fetch cloud evaluations where possible
+    positions = await fetchCloudEvaluations(positions, depth);
+
+    // Evaluate remaining positions
+    let workerCount = 0;
+
+    const stockfishManager: NodeJS.Timeout = setInterval(
+        () =>
+            stockfishManagerCallback(
+                positions,
+                workerCount,
+                depth,
+                stockfishManager
+            ),
+        10
+    );
+}
+
+async function cloudEvaluation(fen: string) {
+    try {
+        const cloudEvaluationResponse = await fetch(
+            `https://lichess.org/api/cloud-eval?fen=${fen}&multiPv=2`,
+            {
+                method: "GET",
+            }
+        );
+
+        if (!cloudEvaluationResponse || !cloudEvaluationResponse.ok) return;
+
+        return await cloudEvaluationResponse.json();
+    } catch {}
+}
+
+async function fetchCloudEvaluations(positions: Position[], depth: number) {
     for (let position of positions) {
-        function placeCutoff() {
-            let lastPosition = positions[positions.indexOf(position) - 1];
-            if (!lastPosition) return;
-
-            let cutoffWorker = new Stockfish();
-            cutoffWorker
-                .evaluate(lastPosition.fen, depth)
-                .then((engineLines) => {
-                    lastPosition.cutoffEvaluation = engineLines.find(
-                        (line) => line.id == 1
-                    )?.evaluation ?? { type: "cp", value: 0 };
-                });
-        }
-
         let queryFen = position.fen.replace(/\s/g, "%20");
-        let cloudEvaluationResponse;
-        try {
-            //FIXME: api request always fails
-            cloudEvaluationResponse = await fetch(
-                `https://lichess.org/api/cloud-eval?fen=${queryFen}&multiPv=2`,
-                {
-                    method: "GET",
-                }
-            );
+        const cloudEvaluationResponse = await cloudEvaluation(queryFen);
 
-            if (!cloudEvaluationResponse) break;
-        } catch {
-            break;
-        }
+        if (!cloudEvaluationResponse) break;
 
-        if (!cloudEvaluationResponse.ok) {
-            placeCutoff();
-            break;
-        }
+        position.topLines = cloudEvaluationResponse.pvs.map(
+            (pv: any, id: number) => {
+                const evaluationType = pv.cp == undefined ? "mate" : "cp";
+                const evaluationScore = pv.cp ?? pv.mate ?? "cp";
 
-        let cloudEvaluation = await cloudEvaluationResponse.json();
+                let line: EngineLine = {
+                    id: id + 1,
+                    depth: depth,
+                    moveUCI: pv.moves.split(" ")[0] ?? "",
+                    evaluation: {
+                        type: evaluationType,
+                        value: evaluationScore,
+                    },
+                };
 
-        position.topLines = cloudEvaluation.pvs.map((pv: any, id: number) => {
-            const evaluationType = pv.cp == undefined ? "mate" : "cp";
-            const evaluationScore = pv.cp ?? pv.mate ?? "cp";
+                let cloudUCIFixes: { [key: string]: string } = {
+                    e8h8: "e8g8",
+                    e1h1: "e1g1",
+                    e8a8: "e8c8",
+                    e1a1: "e1c1",
+                };
+                line.moveUCI = cloudUCIFixes[line.moveUCI] ?? line.moveUCI;
 
-            let line: EngineLine = {
-                id: id + 1,
-                depth: depth,
-                moveUCI: pv.moves.split(" ")[0] ?? "",
-                evaluation: {
-                    type: evaluationType,
-                    value: evaluationScore,
-                },
-            };
-
-            let cloudUCIFixes: { [key: string]: string } = {
-                e8h8: "e8g8",
-                e1h1: "e1g1",
-                e8a8: "e8c8",
-                e1a1: "e1c1",
-            };
-            line.moveUCI = cloudUCIFixes[line.moveUCI] ?? line.moveUCI;
-
-            return line;
-        });
+                return line;
+            }
+        );
 
         if (position.topLines?.length != 2) {
-            placeCutoff();
             break;
         }
 
@@ -159,55 +152,61 @@ async function evaluate() {
         logAnalysisInfo(`Evaluating positions... (${progress.toFixed(1)}%)`);
     }
 
-    // Evaluate remaining positions
-    let workerCount = 0;
-
-    const stockfishManager = setInterval(() => {
-        // If all evaluations have been generated, move on
-        if (!positions.some((pos) => !pos.topLines)) {
-            clearInterval(stockfishManager);
-
-            logAnalysisInfo("Evaluation complete.");
-            $("#evaluation-progress-bar").val(100);
-
-            evaluatedPositions = positions;
-            ongoingEvaluation = false;
-
-            report();
-
-            return;
-        }
-
-        // Find next position with no worker and add new one
-        for (let position of positions) {
-            if (position.worker || workerCount >= 8) continue;
-
-            let worker = new Stockfish();
-            worker.evaluate(position.fen, depth).then((engineLines) => {
-                position.topLines = engineLines;
-                workerCount--;
-            });
-
-            position.worker = worker;
-            workerCount++;
-        }
-
-        // Update progress monitor
-        let workerDepths = 0;
-        for (let position of positions) {
-            if (typeof position.worker == "object") {
-                workerDepths += position.worker.depth;
-            } else if (typeof position.worker == "string") {
-                workerDepths += depth;
-            }
-        }
-
-        let progress = (workerDepths / (positions.length * depth)) * 100;
-
-        $("#evaluation-progress-bar").attr("value", progress);
-        logAnalysisInfo(`Evaluating positions... (${progress.toFixed(1)}%)`);
-    }, 10);
+    return positions;
 }
+
+function stockfishManagerCallback(
+    positions: Position[],
+    workerCount: number,
+    depth: number,
+    stockfishManager: NodeJS.Timeout
+) {
+    // If all evaluations have been generated, move on
+    if (!positions.some((pos) => !pos.topLines)) {
+        clearInterval(stockfishManager);
+
+        logAnalysisInfo("Evaluation complete.");
+        $("#evaluation-progress-bar").val(100);
+
+        evaluatedPositions = positions;
+        ongoingEvaluation = false;
+
+        report();
+
+        return;
+    }
+
+    // Find next position with no worker and add new one
+    for (let position of positions) {
+        if (position.worker || workerCount >= 8) continue;
+
+        let worker = new Stockfish();
+        worker.evaluate(position.fen, depth).then((engineLines) => {
+            position.topLines = engineLines;
+            workerCount--;
+        });
+
+        position.worker = worker;
+        workerCount++;
+    }
+
+    // Update progress monitor
+    let workerDepths = 0;
+    for (let position of positions) {
+        if (typeof position.worker == "object") {
+            workerDepths += position.worker.depth;
+        } else if (typeof position.worker == "string") {
+            workerDepths += depth;
+        }
+    }
+
+    let progress = (workerDepths / (positions.length * depth)) * 100;
+
+    $("#evaluation-progress-bar").attr("value", progress);
+    logAnalysisInfo(`Evaluating positions... (${progress.toFixed(1)}%)`);
+}
+
+// #endregion
 
 function loadReportCards() {
     // Reset chess board, draw evaluation for starting position

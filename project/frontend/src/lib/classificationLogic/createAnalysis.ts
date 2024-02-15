@@ -1,9 +1,11 @@
-import { parse as parsePGN, ParsedPGN } from "pgn-parser";
+import { parse, ParsedPGN } from "pgn-parser";
 import { Chess, Move } from "chess.js";
 import { Position } from "./types/Position.js";
-import { Position as EvaluatedPosition } from "../types.js";
+import { Position as EvaluatedPosition, Profile } from "../types.js";
 import { Report } from "../types.js";
 import analyse from "./analysis.js";
+import { whitePlayer, blackPlayer, updateBoardPlayers } from "../board.js";
+import { PGNTag } from "./types/PGN.js";
 
 // #region ParsePGNToPositions
 
@@ -11,13 +13,35 @@ export async function positionsFromPGN(pgn?: string): Promise<Position[]> {
     if (!pgn) throw new Error("PGN not provided to parse");
 
     const parsedPGN: ParsedPGN = PGNToJSON(pgn);
+    setPlayers(parsedPGN);
     const positions: Position[] = generatePositions(parsedPGN);
 
     return positions;
 }
 
+function setPlayers(parsedPGN: ParsedPGN) {
+    const tags: PGNTag = mapPGNHeaders(parsedPGN);
+    setPlayer(whitePlayer, tags.White, tags.WhiteElo);
+    setPlayer(blackPlayer, tags.Black, tags.BlackElo);
+    updateBoardPlayers();
+}
+
+function mapPGNHeaders(parsedPGN: ParsedPGN) {
+    return (
+        parsedPGN.headers?.reduce((tags, obj) => {
+            tags[obj.name] = obj.value;
+            return tags;
+        }, {} as PGNTag) ?? {}
+    );
+}
+
+function setPlayer(player: Profile, username?: string, rating?: string) {
+    player.username = username ?? player.username;
+    player.rating = rating ?? player.rating;
+}
+
 function PGNToJSON(pgn: string): ParsedPGN {
-    const [parsedPGN] = parsePGN(pgn);
+    const [parsedPGN] = parse(pgn);
 
     if (!parsedPGN) {
         throw new Error("Failed to parse PGN");
@@ -26,12 +50,12 @@ function PGNToJSON(pgn: string): ParsedPGN {
     return parsedPGN;
 }
 
-function generatePositions(moves: ParsedPGN): Position[] {
+function generatePositions(parsedPGN: ParsedPGN): Position[] {
     const board = new Chess();
     const positions: Position[] = [];
     positions.push({ fen: board.fen() });
 
-    for (const pgnMove of moves.moves) {
+    for (const pgnMove of parsedPGN.moves) {
         const moveSAN = pgnMove.move;
         const virtualBoardMove = makeVirtualBoardMove(board, moveSAN);
         const moveUCI = virtualBoardMove.from + virtualBoardMove.to;
