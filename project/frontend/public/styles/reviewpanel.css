@@ -184,34 +184,6 @@
 }
 
 /*
-    RECAPTCHA COMPONENT
-*/
-.g-recaptcha {
-    display: none;
-    margin-top: 10px;
-    transform: scale(0.9);
-    transition-duration: 0.3s;
-}
-
-@media (max-width: 1300px) {
-    .g-recaptcha {
-        transform: scale(0.85);
-    }
-}
-
-@media (max-width: 1200px) {
-    .g-recaptcha {
-        transform: scale(0.75);
-    }
-}
-
-@media (max-width: 999px) {
-    .g-recaptcha {
-        transform: scale(0.9);
-    }
-}
-
-/*
     ANALYSIS SECONDARY MESSAGE
 */
 #secondary-message {

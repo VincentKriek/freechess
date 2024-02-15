@@ -45,10 +45,7 @@ async function parsePGN(pgn?: string): Promise<Position[]> {
 }
 
 async function evaluate() {
-    // Remove and reset CAPTCHA, remove report cards, display progress bar
-    $(".g-recaptcha").css("display", "none");
-    // grecaptcha.reset();
-
+    // Remove report cards, display progress bar
     $("#report-cards").css("display", "none");
     $("#evaluation-progress-bar").css("display", "inline");
 
@@ -231,8 +228,7 @@ function loadReportCards() {
 }
 
 async function report() {
-    // Remove CAPTCHA
-    $(".g-recaptcha").css("display", "none");
+    // Remove reset progress bar
     $("#secondary-message").html("");
     $("#evaluation-progress-bar").attr("value", null);
     logAnalysisInfo("Generating report...");

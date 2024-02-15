@@ -1,11 +1,6 @@
 import { Stockfish } from "./engine.js";
 import { Classification } from "./classificationLogic/classification.js";
 
-export declare class grecaptcha {
-    static reset(): void;
-    static getResponse(): string;
-}
-
 export interface Profile {
     username: string;
     rating: string;
